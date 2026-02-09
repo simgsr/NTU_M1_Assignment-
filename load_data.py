@@ -169,11 +169,8 @@ filtered_df = filtered_df[~exclude_avg_salary_mask]
 output_file = "data/filtered_SGJobData_above_4k_salary.csv"
 utils.export_dataframe_to_csv(filtered_df, output_file)
 
-
 #check outliers for salary columns (min, max, average)
 salary_df = filtered_df[['salary_minimum','salary_maximum','average_salary']].astype(np.float64)
 print("\nDescribe salary dataframe:\n", salary_df.describe(),"\n", salary_df.info())
 print(salary_df.head())
 
-
-#map job level to main categories
