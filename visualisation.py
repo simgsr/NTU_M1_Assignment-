@@ -10,7 +10,7 @@ categories_sql = """select
                         cat_id as 'Category ID',
                         cat_name as 'Category Name' 
                     from Categories
-"""
+                """
 
 # 3. Load the result set directly into a Pandas DataFrame
 categories_df = conn.query(categories_sql).to_df()
