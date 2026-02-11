@@ -50,11 +50,19 @@ output_file = "data/non_blank_categories.csv"
 '''
 STEP 2 - check columns with data that are not meaningful
 '''
+unique_counts = df.nunique()
+print("df columns unique counts:")
+print(unique_counts)
+print("columns with 1 unique value:")
+print(df[['occupationId','salary_type','status_id']].head())
 #drop occupationId column as it contains no data
 filtered_df = filtered_df.drop(columns=['occupationId'])
 
 #drop status_id column as it contains non-informative data
 filtered_df = filtered_df.drop(columns=['status_id'])
+
+#drop salary_type column as the related salary fields capture salary in different forms (per hour, per month, per year)
+filtered_df = filtered_df.drop(columns=['salary_type'])
 
 # check filtered dataframe if columns contain blank entries after dropping columns
 print("\nAfter removing columns occupationId and status_id:")
@@ -155,15 +163,23 @@ exclude_job_title_mask = (filtered_df['title'].str.contains('parttime', case=Fal
                            | filtered_df['title'].str.contains('flexible', case=False, na=False)
                            | filtered_df['title'].str.contains(hourly_paid_jobs_pattern, case=False, na=False, regex=True)
                         )
+excluded_job_titles_df = filtered_df[exclude_job_title_mask]
+output_file = "data/excluded_job_titles.csv"
+#utils.export_dataframe_to_csv(excluded_job_titles_df, output_file)
 
 filtered_df = filtered_df[~exclude_job_title_mask]
-
-#to remove outliers where average salary > 400,000
-filtered_df = filtered_df[filtered_df['average_salary'] <= 400000]
+output_file = "data/filtered_SGJobData.csv"
+#utils.export_dataframe_to_csv(filtered_df, output_file)
 
 '''
 STEP 7 - identify targeted data set and remove outliers
 '''
+before_salary_df = filtered_df[['salary_minimum','salary_maximum','average_salary']].astype(np.float64)
+print("\nBefore removing outliers, Describe salary dataframe:\n", before_salary_df.describe())
+
+#to remove outliers where average salary > 400,000
+filtered_df = filtered_df[filtered_df['average_salary'] <= 400000]
+
 #to remove outliers where average salary seems too high for job posting
 #i.e. metadata_jobPostId = MCF-2024-0351969, MCF-2024-0492535
 exclude_specific_jobPostId_mask = (filtered_df['metadata_jobPostId'].str.fullmatch('MCF-2024-0351969')
@@ -187,6 +203,6 @@ Check statistics for salary columns after data cleaning
 '''
 #check outliers for salary columns (min, max, average)
 salary_df = filtered_df[['salary_minimum','salary_maximum','average_salary']].astype(np.float64)
-print("\nDescribe salary dataframe:\n", salary_df.describe(),"\n", salary_df.info())
+print("\nAfter removing outliers, Describe salary dataframe:\n", salary_df.describe())
 print(salary_df.head())
-   
+
