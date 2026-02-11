@@ -24,10 +24,14 @@ conda activate ntu-m1-assignment
 Refer to [EDA.md](EDA.md) for details on cleaning data.
 
 ```bash
-# run load_data.py to generate cleaned data file "filtered_SGJobData_above_4k_salary.csv"
+# run load_data.py to generate cleaned csv file
 python load_data.py
 
 # provide the path to the original csv file when asked for input
+3 cleaned csv files will be created based on different data set
+(a) output_file = "data/filtered_SGJobData.csv" [974,187 records]
+(b) output_file = "data/filtered_SGJobData_40yearsOfExperience.csv" [974,173 records]
+(c) output_file = "data/filtered_SGJobData_40yearsOfExperience_and_above_3k_salary.csv" [752,316 records]
 ```
 
 ### 4. Create normalized database
@@ -35,7 +39,8 @@ python load_data.py
 # run m1_gen_db.py to generate the normalized database file "SGJobData_Normalized.db"
 python m1_gen_db.py
 
-# provide the path to the cleaned data file "filtered_SGJobData_above_4k_salary.csv" file when asked for input
+# provide the path to the cleaned csv file when asked for input
+# decide which of the 3 cleaned csv files to be used to create the database 
 ```
 
 ### 5. Connect database with DBGate

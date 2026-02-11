@@ -9,7 +9,7 @@ pd.set_option('display.float_format', '{:.2f}'.format)
 # Use read_csv to load the data into a DataFrame
 # By default, it assumes the first row is the header
 # remove csv_file_path = "data/SGJobData.csv" to allow user to input their filepath
-csv_file_path =  input("Enter the input markdown file path: ").strip()
+csv_file_path =  input("Enter the input file path: ").strip()
 df = pd.read_csv(csv_file_path)
 
 #print(df.size)
@@ -129,7 +129,7 @@ STEP 6 - identify the employment types of jobs to focus on
 employment_type_groupings = filtered_df.groupby('employmentTypes').size().reset_index(name='Count')
 employment_type_groupings['Percentage of jobs'] = employment_type_groupings['Count'].astype(np.float64) / len(filtered_df) * 100
 employment_type_groupings.sort_values(by='Count', ascending=False, inplace=True)
-print("Using size():\n", employment_type_groupings)
+print("No. of jobs by employment type:\n", employment_type_groupings)
 
 '''
 based on employment types, to focus only on 95% of jobs:
@@ -158,20 +158,35 @@ exclude_job_title_mask = (filtered_df['title'].str.contains('parttime', case=Fal
 
 filtered_df = filtered_df[~exclude_job_title_mask]
 
-'''
-to remove outliers where average salary > 400,000
-to remove low paying jobs where average salary < 4,000
-'''
-#exclude average salary upper bound for outliers, and exclude jobs where average salary is below 4000
-exclude_avg_salary_mask = (filtered_df['average_salary'] > 400000) | (filtered_df['average_salary'] < 4000)
-filtered_df = filtered_df[~exclude_avg_salary_mask]
+#to remove outliers where average salary > 400,000
+filtered_df = filtered_df[filtered_df['average_salary'] <= 400000]
 
-#export filtered dataframe to csv
-output_file = "data/filtered_SGJobData_above_4k_salary.csv"
+'''
+STEP 7 - identify targeted data set and remove outliers
+'''
+#to remove outliers where average salary seems too high for job posting
+#i.e. metadata_jobPostId = MCF-2024-0351969, MCF-2024-0492535
+exclude_specific_jobPostId_mask = (filtered_df['metadata_jobPostId'].str.fullmatch('MCF-2024-0351969')
+                                   | filtered_df['metadata_jobPostId'].str.fullmatch('MCF-2024-0492535'))
+filtered_df = filtered_df[~exclude_specific_jobPostId_mask]
+output_file = "data/filtered_SGJobData.csv"
 utils.export_dataframe_to_csv(filtered_df, output_file)
 
+#to remove job postings where years of experience is above 40 years
+filtered_df = filtered_df[filtered_df['minimumYearsExperience'] <= 40]
+output_file = "data/filtered_SGJobData_40yearsOfExperience.csv"
+utils.export_dataframe_to_csv(filtered_df, output_file)
+
+#to remove job postings where average salary is below 3,000
+filtered_df = filtered_df[filtered_df['average_salary'] >= 3000]
+output_file = "data/filtered_SGJobData_40yearsOfExperience_and_above_3k_salary.csv"
+utils.export_dataframe_to_csv(filtered_df, output_file)
+
+'''
+Check statistics for salary columns after data cleaning
+'''
 #check outliers for salary columns (min, max, average)
 salary_df = filtered_df[['salary_minimum','salary_maximum','average_salary']].astype(np.float64)
 print("\nDescribe salary dataframe:\n", salary_df.describe(),"\n", salary_df.info())
 print(salary_df.head())
-
+   

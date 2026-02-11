@@ -26,5 +26,9 @@
 - based on employment types, to focus only on 95% of jobs: Permanent (44%), Full Time (38%) and Contract (13%)
 - to remove jobs with titles that are meant for excluded employment types e.g. parttime/part time, intern, temp
 - to remove jobs with titles that contain hourly rates
+
+### (7) identify targeted data set and remove outliers
 - to remove outliers where average salary > 400,000
-- to remove low paying jobs where average salary < 4,000
+- to remove jobs with more than 40 years of min experience
+- to remove low paying jobs where average salary < 3,000
+
