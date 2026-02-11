@@ -4,8 +4,8 @@ import pandas as pd
 import ast
 
 def preprocess_and_normalize(csv_path, 
-                            direct_db_name='SGJobData.db', 
-                            normalized_db_name='SGJobData_Normalized.db'):
+                            direct_db_name='db/SGJobData.db', 
+                            normalized_db_name='db/SGJobData_Normalized.db'):
     """
     Preprocess CSV containing job data with nested categories, create a direct database,
     and normalize into 3NF schema in a separate database.
@@ -83,6 +83,54 @@ def preprocess_and_normalize(csv_path,
         if 'categories' in normalized_df.columns:
             normalized_df = normalized_df.drop('categories', axis=1)
         
+        # map categories to generic sectors
+        sector_map = {                        
+                        'Accounting / Auditing / Taxation': 'Financial & Professional Services',
+                        'Admin / Secretarial': 'Business Support & Administration',
+                        'Advertising / Media': 'Creative, Media & Design',
+                        'Architecture / Interior Design': 'Built Environment & Real Estate',
+                        'Banking and Finance': 'Financial & Professional Services',
+                        'Building and Construction': 'Built Environment & Real Estate',
+                        'Consulting': 'Financial & Professional Services',
+                        'Customer Service': 'Sales, Retail & Personal Services',
+                        'Design': 'Creative, Media & Design',
+                        'Education and Training': 'Public & Social Services',
+                        'Engineering': 'Engineering & Manufacturing',
+                        'Entertainment': 'Creative, Media & Design',
+                        'Environment / Health': 'Public & Social Services',
+                        'Events / Promotions': 'Sales, Retail & Personal Services',
+                        'F&B': 'Hospitality & Tourism',
+                        'General Management': 'Business Support & Administration',
+                        'General Work': 'Others & General Work',
+                        'Healthcare / Pharmaceutical': 'Healthcare & Life Sciences',
+                        'Hospitality': 'Hospitality & Tourism',
+                        'Human Resources': 'Business Support & Administration',
+                        'Information Technology': 'Technology & Telecommunications',
+                        'Insurance': 'Financial & Professional Services',
+                        'Legal': 'Financial & Professional Services',
+                        'Logistics / Supply Chain': 'Logistics, Trade & Supply Chain',
+                        'Manufacturing': 'Engineering & Manufacturing',
+                        'Marketing / Public Relations': 'Creative, Media & Design',
+                        'Medical / Therapy Services': 'Healthcare & Life Sciences',
+                        'Others': 'Others & General Work',
+                        'Personal Care / Beauty': 'Sales, Retail & Personal Services',
+                        'Precision Engineering': 'Engineering & Manufacturing',
+                        'Professional Services': 'Financial & Professional Services',
+                        'Public / Civil Service': 'Public & Social Services',
+                        'Purchasing / Merchandising': 'Logistics, Trade & Supply Chain',
+                        'Real Estate / Property Management': 'Built Environment & Real Estate',
+                        'Repair and Maintenance': 'Engineering & Manufacturing',
+                        'Risk Management': 'Financial & Professional Services',
+                        'Sales / Retail': 'Sales, Retail & Personal Services',
+                        'Sciences / Laboratory / R&D': 'Healthcare & Life Sciences',
+                        'Security and Investigation': 'Public & Social Services',
+                        'Social Services': 'Public & Social Services',
+                        'Telecommunications': 'Technology & Telecommunications',
+                        'Travel / Tourism': 'Hospitality & Tourism',
+                        'Wholesale Trade': 'Logistics, Trade & Supply Chain'
+                    }
+        normalized_df['Sector'] = normalized_df['Cat_Name'].map(sector_map)
+
         print(f"Created {len(normalized_df):,} normalized rows")
         
         # === STEP 4: CREATE DIRECT (DENORMALIZED) DATABASE ===
@@ -102,26 +150,56 @@ def preprocess_and_normalize(csv_path,
         norm_con = duckdb.connect(normalized_db_name)
         norm_con.register('normalized_data', normalized_df)
         
-        # Create normalized schema (3NF) with three tables:
-        
+        # Create normalized schema (3NF) with three tables:        
         # 1. CATEGORIES DIMENSION TABLE
         # Contains unique category entities with their attributes
         # This eliminates duplicate category information
         norm_con.execute("""
-            CREATE TABLE Categories AS
-            SELECT DISTINCT 
-                Cat_ID,
-                Cat_Name
+            CREATE TABLE Categories (
+                Cat_ID INT PRIMARY KEY,
+                Cat_Name VARCHAR NOT NULL,      
+                Sector VARCHAR NOT NULL         
+            );
+        """) 
+              
+        norm_con.execute("""
+            INSERT INTO Categories
+            SELECT DISTINCT Cat_ID,
+                            Cat_Name,
+                            Sector
             FROM normalized_data
             WHERE Cat_ID IS NOT NULL
-            ORDER BY Cat_ID
+            ORDER BY Cat_ID;
         """)
         
         # 2. JOBS FACT TABLE
         # Contains core job information without repeating categories
         # This table has one row per job with all job-specific attributes
         norm_con.execute("""
-            CREATE TABLE Jobs AS
+            CREATE TABLE Jobs (
+                metadata_jobPostId VARCHAR PRIMARY KEY,
+                employmentTypes VARCHAR,
+                metadata_expiryDate DATE,
+                metadata_isPostedOnBehalf BOOLEAN,
+                metadata_newPostingDate DATE,
+                metadata_originalPostingDate DATE,
+                metadata_repostCount INT,
+                metadata_totalNumberJobApplication INT,
+                metadata_totalNumberOfView INT,
+                minimumYearsExperience INT,
+                numberOfVacancies INT,
+                positionLevels VARCHAR,
+                postedCompany_name VARCHAR,
+                salary_maximum DECIMAL,
+                salary_minimum DECIMAL,
+                status_jobStatus VARCHAR,
+                title VARCHAR,
+                average_salary DECIMAL
+            );
+        """)       
+        
+        norm_con.execute("""
+            INSERT INTO Jobs
             SELECT DISTINCT
                 metadata_jobPostId,
                 employmentTypes,
@@ -134,29 +212,36 @@ def preprocess_and_normalize(csv_path,
                 metadata_totalNumberOfView,
                 minimumYearsExperience,
                 numberOfVacancies,
-                occupationId,
                 positionLevels,
                 postedCompany_name,
                 salary_maximum,
                 salary_minimum,
-                salary_type,
-                status_id,
                 status_jobStatus,
                 title,
                 average_salary
-            FROM normalized_data
+            FROM normalized_data;
         """)
         
         # 3. JOBCATEGORIES JUNCTION TABLE
         # Resolves many-to-many relationship between Jobs and Categories
         # A job can have multiple categories, and a category can belong to multiple jobs
         norm_con.execute("""
-            CREATE TABLE JobCategories AS
+            CREATE TABLE JobCategories (
+                metadata_jobPostId VARCHAR NOT NULL,
+                Cat_ID INT NOT NULL,      
+                CONSTRAINT jobcat_pk PRIMARY KEY (metadata_jobPostId, Cat_ID),
+                CONSTRAINT jobcat_fk1 FOREIGN KEY (metadata_jobPostId) REFERENCES Jobs (metadata_jobPostId),
+                CONSTRAINT jobcat_fk2 FOREIGN KEY (Cat_ID) REFERENCES Categories (Cat_ID)
+            );
+        """) 
+        
+        norm_con.execute("""
+            INSERT INTO JobCategories
             SELECT DISTINCT
                 metadata_jobPostId,
                 Cat_ID
             FROM normalized_data
-            WHERE Cat_ID IS NOT NULL
+            WHERE Cat_ID IS NOT NULL;
         """)
         
         # === STEP 6: REPORT FINAL STATISTICS ===
@@ -165,7 +250,7 @@ def preprocess_and_normalize(csv_path,
         print(f"   - Jobs: {norm_con.execute('SELECT COUNT(*) FROM Jobs').fetchone()[0]} distinct jobs")
         print(f"   - JobCategories: {norm_con.execute('SELECT COUNT(*) FROM JobCategories').fetchone()[0]} relationships")
         
-        norm_con.close()
+        norm_con.close()       
         return True
         
     except Exception as e:
