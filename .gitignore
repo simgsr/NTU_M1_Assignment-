@@ -1,4 +1,4 @@
-
+*.ipynb
 *.db
 data/
 .DS_Store
