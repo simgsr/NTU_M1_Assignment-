@@ -7,8 +7,10 @@ import duckdb
 conn = duckdb.connect('db/SGJobData_Normalized.db')
 
 # 2. Define your SQL query based on your business objective
-jobs_count_sql = """select count(*) as job_count 
-                    from Jobs
+jobs_count_sql = """select status_jobStatus, 
+                    count(*) as job_count 
+                    from Jobs 
+                    group by status_jobStatus
                 """
 
 categories_sql = """select sector,Cat_Name as Category
@@ -67,6 +69,9 @@ exp_bins_sql = """
 
 # 3. Load the result set directly into a Pandas DataFrame
 jobs_count_df = conn.query(jobs_count_sql).to_df()
+jobs_count_df['percentage'] = (jobs_count_df['job_count'] / jobs_count_df['job_count'].sum())
+print(jobs_count_df)
+
 categories_df = conn.query(categories_sql).to_df()
 sectors_df = categories_df.groupby('Sector')['Category'].apply(lambda x: ', '.join(x)).reset_index()
 
@@ -76,14 +81,14 @@ sector_jobs_df = sector_jobs_df[['Sector','% of Total Job Postings','Number Of J
 
 sector_jobs_status_df = conn.query(sector_jobs_status_sql).to_df()
 sector_jobs_status_df = sector_jobs_status_df.pivot(index='Sector', columns='Job Status', values='Number Of Job Postings').reset_index()
-print(sector_jobs_status_df)
+#print(sector_jobs_status_df)
 
 sector_jobs_status_combined = pd.merge(sector_jobs_df, sector_jobs_status_df, on='Sector', how='inner')
 sector_jobs_status_combined['% of Open Postings'] = sector_jobs_status_combined['Open'] / sector_jobs_status_combined['Number Of Job Postings']
 sector_jobs_status_combined['% of Closed Postings'] = sector_jobs_status_combined['Closed'] / sector_jobs_status_combined['Number Of Job Postings']
 sector_jobs_status_combined['% of Re-open Postings'] = sector_jobs_status_combined['Re-open'] / sector_jobs_status_combined['Number Of Job Postings']
 sector_jobs_status_combined = sector_jobs_status_combined[['Sector','% of Total Job Postings','Number Of Job Postings','Open','% of Open Postings','Closed','% of Closed Postings','Re-open','% of Re-open Postings']]
-print(sector_jobs_status_combined)
+#print(sector_jobs_status_combined)
 
 exp_bins_df = conn.query(exp_bins_sql).to_df()
 exp_bins_df = exp_bins_df.groupby('ExpBin', sort=False)['CountInBin'].sum().reset_index()
@@ -99,14 +104,20 @@ if showVisualisation:
     st.caption("NTU SCTP DSAI GROUP 1")
 
     st.header("Key Metrics")
-    # Create four columns for the metrics and unpack them
-    # We can then use each column to place a metric
-    col1, col2, col3, col4 = st.columns(4)
-
-    # Populate each column with a metric by passing label and value
-    col1.metric("Total Job Postings", f"{jobs_count_df['job_count'].item():,}")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total Job Postings", f"{jobs_count_df['job_count'].sum():,}")
     col2.metric("Number Of Sectors (Categories)", f"{len(sectors_df)} ({len(categories_df)})")
-    col3.metric("Total Job Postings By Sectors", f"{sector_jobs_df['Number Of Job Postings'].sum():,}")
+    open_jobs_count = jobs_count_df.loc[jobs_count_df['status_jobStatus'] == 'Open', 'job_count'].item()
+    open_jobs_pct = jobs_count_df.loc[jobs_count_df['status_jobStatus'] == 'Open', 'percentage'].item()
+
+    col4, col5, col6 = st.columns(3)
+    col4.metric("Open Job Postings", f"{open_jobs_count:,} (" + f"{open_jobs_pct:.2%}" + ")")
+    closed_jobs_count = jobs_count_df.loc[jobs_count_df['status_jobStatus'] == 'Closed', 'job_count'].item()
+    closed_jobs_pct = jobs_count_df.loc[jobs_count_df['status_jobStatus'] == 'Closed', 'percentage'].item()
+    col5.metric("Closed Job Postings", f"{closed_jobs_count:,} (" + f"{closed_jobs_pct:.2%}" + ")")
+    reopen_jobs_count = jobs_count_df.loc[jobs_count_df['status_jobStatus'] == 'Re-open', 'job_count'].item()
+    reopen_jobs_pct = jobs_count_df.loc[jobs_count_df['status_jobStatus'] == 'Re-open', 'percentage'].item()
+    col6.metric("Re-open Job Postings", f"{reopen_jobs_count:,} (" + f"{reopen_jobs_pct:.2%}" + ")")
 
     st.subheader("Job Categories By Sectors")
     st.dataframe(sectors_df, hide_index=True, height="content")
@@ -135,10 +146,10 @@ if showVisualisation:
         #st.subheader("XXX")
 
     
-    st.subheader("All Job By Years Of Experience")
-    st.dataframe(exp_bins_df, hide_index=True, height="content")
-    st.bar_chart(exp_bins_df, x="ExpBin", y="CountInBin", sort="Sequence",
-                horizontal=False, width=2000, height="content")
+    #st.subheader("All Job By Years Of Experience")
+    #st.dataframe(exp_bins_df, hide_index=True, height="content")
+    #st.bar_chart(exp_bins_df, x="ExpBin", y="CountInBin", sort="Sequence",
+    #            horizontal=False, width=2000, height="content")
 
     # postings by month/year over time, stacked bar by experience levels
 
