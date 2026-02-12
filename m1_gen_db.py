@@ -1,284 +1,261 @@
-import os
-import duckdb
-import pandas as pd
-import ast
+"""
+Job Postings ETL Pipeline
 
-def preprocess_and_normalize(csv_path, 
-                            direct_db_name='db/SGJobData.db', 
-                            normalized_db_name='db/SGJobData_Normalized.db'):
-    """
-    Preprocess CSV containing job data with nested categories, create a direct database,
-    and normalize into 3NF schema in a separate database.
+This script processes a large CSV file with nested JSON fields containing category objects,
+normalizes the categories column, and persists the data to DuckDB and Pickle formats.
+"""
+
+import pandas as pd
+import duckdb
+import json
+import os
+import numpy as np
+
+# ============================================================================
+# 1. User Input Handling
+# ============================================================================
+
+def get_file_path():
+    """Prompt user for CSV file path."""
+    file_path = input("Enter the path to the CSV file: ").strip()
+    file_path = file_path.strip('"').strip("'")
+    return file_path
+
+# ============================================================================
+# 2. Data Loading Function
+# ============================================================================
+
+def load_csv_efficiently(file_path):
+    """Load CSV with optimized dtypes for memory efficiency."""
+    print("Loading CSV...")
     
-    Args:
-        csv_path: Path to input CSV file
-        direct_db_name: Name for the direct (denormalized) database file
-        normalized_db_name: Name for the normalized (3NF) database file
+    # First pass: read dtypes from sample
+    sample = pd.read_csv(file_path, nrows=1000)
+    
+    dtype_dict = {}
+    for col in sample.columns:
+        if col == 'categories':
+            dtype_dict[col] = 'object'
+        elif sample[col].dtype == 'object':
+            if sample[col].nunique() / len(sample) < 0.5:
+                dtype_dict[col] = 'category'
+            else:
+                dtype_dict[col] = 'object'
+        elif sample[col].dtype == 'int64':
+            dtype_dict[col] = 'int32'
+        elif sample[col].dtype == 'float64':
+            dtype_dict[col] = 'float32'
+    
+    # Read full CSV with optimized dtypes
+    df = pd.read_csv(file_path, dtype=dtype_dict)
+    return df
+
+# ============================================================================
+# 3. Category Normalization Function
+# ============================================================================
+
+def parse_categories(json_str):
+    """
+    Parse JSON string to extract category id and name.
+    Expected format: [{"id": 13, "category": "Environment / Health"}, ...]
     """
     try:
-        # === STEP 1: READ AND INITIAL PROCESSING ===
-        print("Reading CSV file...")
-        df = pd.read_csv(csv_path)
-        print(f"Loaded {len(df):,} rows from CSV")
+        if pd.isna(json_str):
+            return []
         
-        # Process categories column (stringified list of dicts)
-        normalized_rows = []
+        data = json.loads(json_str)
         
-        # === STEP 2: UNNEST CATEGORIES COLUMN ===
-        # The categories column contains stringified lists of dictionaries
-        # We need to parse and flatten this structure
-        for idx, row in df.iterrows():
-            categories_str = row['categories']
-            job_id = row['metadata_jobPostId']
-            
-            try:
-                if isinstance(categories_str, str):
-                    # Safely parse string representation of list using ast.literal_eval
-                    # This converts the string to actual Python list of dictionaries
-                    categories_list = ast.literal_eval(categories_str.strip())
+        if isinstance(data, list):
+            categories = []
+            for item in data:
+                if isinstance(item, dict):
+                    # Extract id and category fields
+                    cat_id = item.get('id')
+                    cat_name = item.get('category')
                     
-                    if categories_list:
-                        # Create one row per category (unnesting/flattening)
-                        for cat in categories_list:
-                            new_row = dict(row)  # Copy all original columns
-                            new_row['Cat_ID'] = cat.get('id')  # Extract category ID
-                            new_row['Cat_Name'] = cat.get('category')  # Extract category name
-                            normalized_rows.append(new_row)
-                    else:
-                        # Job has no categories (empty list)
-                        new_row = dict(row)
-                        new_row['Cat_ID'] = None
-                        new_row['Cat_Name'] = None
-                        normalized_rows.append(new_row)
-                else:
-                    # Handle null values or already parsed values
-                    new_row = dict(row)
-                    new_row['Cat_ID'] = None
-                    new_row['Cat_Name'] = None
-                    normalized_rows.append(new_row)
-                    
-            except (SyntaxError, ValueError):
-                # Fallback parsing for malformed data (in case ast.literal_eval fails)
-                if isinstance(categories_str, str) and 'id' in categories_str:
-                    import re
-                    # Use regex to extract category IDs and names
-                    ids = re.findall(r'"id":(\d+)', categories_str)
-                    names = re.findall(r'"category":"([^"]+)"', categories_str)
-                    
-                    for cat_id, cat_name in zip(ids, names):
-                        new_row = dict(row)
-                        new_row['Cat_ID'] = int(cat_id)
-                        new_row['Cat_Name'] = cat_name
-                        normalized_rows.append(new_row)
-                else:
-                    new_row = dict(row)
-                    new_row['Cat_ID'] = None
-                    new_row['Cat_Name'] = None
-                    normalized_rows.append(new_row)
-        
-        # === STEP 3: CREATE NORMALIZED DATAFRAME ===
-        normalized_df = pd.DataFrame(normalized_rows)
-        
-        # Remove original nested column as we've extracted its contents
-        if 'categories' in normalized_df.columns:
-            normalized_df = normalized_df.drop('categories', axis=1)
-        
-        # map categories to generic sectors
-        sector_map = {                        
-                        'Accounting / Auditing / Taxation': 'Financial & Professional Services',
-                        'Admin / Secretarial': 'Business Support & Administration',
-                        'Advertising / Media': 'Creative, Media & Design',
-                        'Architecture / Interior Design': 'Built Environment & Real Estate',
-                        'Banking and Finance': 'Financial & Professional Services',
-                        'Building and Construction': 'Built Environment & Real Estate',
-                        'Consulting': 'Financial & Professional Services',
-                        'Customer Service': 'Sales, Retail & Personal Services',
-                        'Design': 'Creative, Media & Design',
-                        'Education and Training': 'Public & Social Services',
-                        'Engineering': 'Engineering & Manufacturing',
-                        'Entertainment': 'Creative, Media & Design',
-                        'Environment / Health': 'Public & Social Services',
-                        'Events / Promotions': 'Sales, Retail & Personal Services',
-                        'F&B': 'Hospitality & Tourism',
-                        'General Management': 'Business Support & Administration',
-                        'General Work': 'Others & General Work',
-                        'Healthcare / Pharmaceutical': 'Healthcare & Life Sciences',
-                        'Hospitality': 'Hospitality & Tourism',
-                        'Human Resources': 'Business Support & Administration',
-                        'Information Technology': 'Technology & Telecommunications',
-                        'Insurance': 'Financial & Professional Services',
-                        'Legal': 'Financial & Professional Services',
-                        'Logistics / Supply Chain': 'Logistics, Trade & Supply Chain',
-                        'Manufacturing': 'Engineering & Manufacturing',
-                        'Marketing / Public Relations': 'Creative, Media & Design',
-                        'Medical / Therapy Services': 'Healthcare & Life Sciences',
-                        'Others': 'Others & General Work',
-                        'Personal Care / Beauty': 'Sales, Retail & Personal Services',
-                        'Precision Engineering': 'Engineering & Manufacturing',
-                        'Professional Services': 'Financial & Professional Services',
-                        'Public / Civil Service': 'Public & Social Services',
-                        'Purchasing / Merchandising': 'Logistics, Trade & Supply Chain',
-                        'Real Estate / Property Management': 'Built Environment & Real Estate',
-                        'Repair and Maintenance': 'Engineering & Manufacturing',
-                        'Risk Management': 'Financial & Professional Services',
-                        'Sales / Retail': 'Sales, Retail & Personal Services',
-                        'Sciences / Laboratory / R&D': 'Healthcare & Life Sciences',
-                        'Security and Investigation': 'Public & Social Services',
-                        'Social Services': 'Public & Social Services',
-                        'Telecommunications': 'Technology & Telecommunications',
-                        'Travel / Tourism': 'Hospitality & Tourism',
-                        'Wholesale Trade': 'Logistics, Trade & Supply Chain'
-                    }
-        normalized_df['Sector'] = normalized_df['Cat_Name'].map(sector_map)
+                    if cat_id is not None and cat_name is not None:
+                        categories.append({
+                            'category_id': int(cat_id),  # Keep as int for efficiency
+                            'category_name': str(cat_name).strip()
+                        })
+            return categories
+        return []
+    except:
+        return []
 
-        print(f"Created {len(normalized_df):,} normalized rows")
+def normalize_categories(df, job_id_col='metadata_jobPostId'):
+    """Normalize the categories column into lookup and junction tables."""
+    
+    # Create jobs table (drop categories column)
+    jobs_df = df.drop(columns=['categories'])
+    
+    # Parse all categories
+    print("Parsing categories...")
+    all_categories = []
+    job_category_links = []
+    
+    total_rows = len(df)
+    for idx, row in df.iterrows():
+        job_id = row[job_id_col]
+        categories = parse_categories(row['categories'])
         
-        # === STEP 4: CREATE DIRECT (DENORMALIZED) DATABASE ===
-        # This database contains the flattened but still denormalized data
-        print(f"\nCreating direct database: {direct_db_name}")
-        direct_con = duckdb.connect(direct_db_name)
-        direct_con.register('normalized_data', normalized_df)
-        direct_con.execute("CREATE TABLE SGJobData AS SELECT * FROM normalized_data")
+        for cat in categories:
+            # Store for categories lookup
+            all_categories.append((cat['category_id'], cat['category_name']))
+            # Store for junction table
+            job_category_links.append((job_id, cat['category_id']))
         
-        # Report direct database statistics
-        direct_count = direct_con.execute("SELECT COUNT(*) FROM SGJobData").fetchone()[0]
-        print(f"   - Direct database created with {direct_count:,} rows")
-        direct_con.close()
-        
-        # === STEP 5: CREATE NORMALIZED (3NF) DATABASE ===
-        print(f"\nCreating normalized database: {normalized_db_name}")
-        norm_con = duckdb.connect(normalized_db_name)
-        norm_con.register('normalized_data', normalized_df)
-        
-        # Create normalized schema (3NF) with three tables:        
-        # 1. CATEGORIES DIMENSION TABLE
-        # Contains unique category entities with their attributes
-        # This eliminates duplicate category information
-        norm_con.execute("""
-            CREATE TABLE Categories (
-                Cat_ID INT PRIMARY KEY,
-                Cat_Name VARCHAR NOT NULL,      
-                Sector VARCHAR NOT NULL         
-            );
-        """) 
-              
-        norm_con.execute("""
-            INSERT INTO Categories
-            SELECT DISTINCT Cat_ID,
-                            Cat_Name,
-                            Sector
-            FROM normalized_data
-            WHERE Cat_ID IS NOT NULL
-            ORDER BY Cat_ID;
-        """)
-        
-        # 2. JOBS FACT TABLE
-        # Contains core job information without repeating categories
-        # This table has one row per job with all job-specific attributes
-        norm_con.execute("""
-            CREATE TABLE Jobs (
-                metadata_jobPostId VARCHAR PRIMARY KEY,
-                employmentTypes VARCHAR,
-                metadata_expiryDate DATE,
-                metadata_isPostedOnBehalf BOOLEAN,
-                metadata_newPostingDate DATE,
-                metadata_originalPostingDate DATE,
-                metadata_repostCount INT,
-                metadata_totalNumberJobApplication INT,
-                metadata_totalNumberOfView INT,
-                minimumYearsExperience INT,
-                numberOfVacancies INT,
-                positionLevels VARCHAR,
-                postedCompany_name VARCHAR,
-                salary_maximum DECIMAL,
-                salary_minimum DECIMAL,
-                status_jobStatus VARCHAR,
-                title VARCHAR,
-                average_salary DECIMAL
-            );
-        """)       
-        
-        norm_con.execute("""
-            INSERT INTO Jobs
-            SELECT DISTINCT
-                metadata_jobPostId,
-                employmentTypes,
-                metadata_expiryDate,
-                metadata_isPostedOnBehalf,
-                metadata_newPostingDate,
-                metadata_originalPostingDate,
-                metadata_repostCount,
-                metadata_totalNumberJobApplication,
-                metadata_totalNumberOfView,
-                minimumYearsExperience,
-                numberOfVacancies,
-                positionLevels,
-                postedCompany_name,
-                salary_maximum,
-                salary_minimum,
-                status_jobStatus,
-                title,
-                average_salary
-            FROM normalized_data;
-        """)
-        
-        # 3. JOBCATEGORIES JUNCTION TABLE
-        # Resolves many-to-many relationship between Jobs and Categories
-        # A job can have multiple categories, and a category can belong to multiple jobs
-        norm_con.execute("""
-            CREATE TABLE JobCategories (
-                metadata_jobPostId VARCHAR NOT NULL,
-                Cat_ID INT NOT NULL,      
-                CONSTRAINT jobcat_pk PRIMARY KEY (metadata_jobPostId, Cat_ID),
-                CONSTRAINT jobcat_fk1 FOREIGN KEY (metadata_jobPostId) REFERENCES Jobs (metadata_jobPostId),
-                CONSTRAINT jobcat_fk2 FOREIGN KEY (Cat_ID) REFERENCES Categories (Cat_ID)
-            );
-        """) 
-        
-        norm_con.execute("""
-            INSERT INTO JobCategories
-            SELECT DISTINCT
-                metadata_jobPostId,
-                Cat_ID
-            FROM normalized_data
-            WHERE Cat_ID IS NOT NULL;
-        """)
-        
-        # === STEP 6: REPORT FINAL STATISTICS ===
-        print("\nNormalized database created successfully:")
-        print(f"   - Categories: {norm_con.execute('SELECT COUNT(*) FROM Categories').fetchone()[0]} unique categories")
-        print(f"   - Jobs: {norm_con.execute('SELECT COUNT(*) FROM Jobs').fetchone()[0]} distinct jobs")
-        print(f"   - JobCategories: {norm_con.execute('SELECT COUNT(*) FROM JobCategories').fetchone()[0]} relationships")
-        
-        norm_con.close()       
-        return True
-        
-    except Exception as e:
-        print(f"Error during processing: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+        # Progress indicator (every 500k rows)
+        if idx > 0 and idx % 500000 == 0:
+            print(f"  Processed {idx:,} rows...")
+    
+    # Create categories lookup table
+    print("Creating categories lookup table...")
+    unique_categories = list(set(all_categories))  # Remove duplicates
+    categories_df = pd.DataFrame(unique_categories, columns=['category_id', 'category_name'])
+    categories_df = categories_df.sort_values('category_id').reset_index(drop=True)
+    
+    # Create job_categories junction table
+    print("Creating job-categories junction table...")
+    job_categories_df = pd.DataFrame(job_category_links, columns=['job_id', 'category_id'])
+    job_categories_df = job_categories_df.drop_duplicates().reset_index(drop=True)
+    
+    # Optimize dtypes
+    categories_df['category_id'] = categories_df['category_id'].astype('int32')
+    categories_df['category_name'] = categories_df['category_name'].astype('category')
+    
+    job_categories_df['job_id'] = job_categories_df['job_id'].astype('category')
+    job_categories_df['category_id'] = job_categories_df['category_id'].astype('int32')
+    
+    return jobs_df, categories_df, job_categories_df
+
+def load_and_normalize():
+    """Main function to load and normalize data."""
+    file_path = get_file_path()
+    
+    if not os.path.exists(file_path):
+        print(f"File not found: {file_path}")
+        return None, None, None, None
+    
+    df = load_csv_efficiently(file_path)
+    
+    if 'categories' not in df.columns:
+        print("Error: 'categories' column not found in CSV")
+        return None, None, None, None
+    
+    jobs_df, categories_df, job_categories_df = normalize_categories(df)
+    
+    output_dir = os.path.dirname(file_path)
+    return jobs_df, categories_df, job_categories_df, output_dir
+
+# ============================================================================
+# 4. Output Persistence Functions
+# ============================================================================
+
+def save_to_duckdb(jobs_df, categories_df, job_categories_df, output_dir):
+    """Save DataFrames to DuckDB database."""
+    db_path = os.path.join(output_dir, 'job_postings.db')
+    conn = duckdb.connect(db_path)
+    
+    # Create tables
+    conn.execute("CREATE OR REPLACE TABLE jobs AS SELECT * FROM jobs_df")
+    conn.execute("CREATE OR REPLACE TABLE categories AS SELECT * FROM categories_df")
+    conn.execute("CREATE OR REPLACE TABLE job_categories AS SELECT * FROM job_categories_df")
+    
+    # Create indexes
+    if len(jobs_df) > 0:
+        conn.execute("CREATE INDEX idx_job_id ON jobs(metadata_jobPostId)")
+    if len(job_categories_df) > 0:
+        conn.execute("CREATE INDEX idx_jc_job_id ON job_categories(job_id)")
+        conn.execute("CREATE INDEX idx_jc_category_id ON job_categories(category_id)")
+    
+    conn.close()
+
+def save_to_pickle(jobs_df, categories_df, job_categories_df, output_dir):
+    """Save DataFrames to Pickle files."""
+    base_path = os.path.join(output_dir, 'job_postings')
+    
+    jobs_df.to_pickle(f'{base_path}_jobs.pkl', compression=None)
+    categories_df.to_pickle(f'{base_path}_categories.pkl', compression=None)
+    job_categories_df.to_pickle(f'{base_path}_job_categories.pkl', compression=None)
+
+# ============================================================================
+# 5. Data Validation Display Function
+# ============================================================================
+
+def display_validation_info(jobs_df, categories_df, job_categories_df):
+    """Display only the required validation information."""
+    
+    print("\n=== DATA LOADED ===")
+    
+    # Display shapes
+    print(f"Jobs DataFrame: Shape = {jobs_df.shape}")
+    print(f"Categories DataFrame: Shape = {categories_df.shape}")
+    print(f"JobCategories DataFrame: Shape = {job_categories_df.shape}")
+    
+    # Display Jobs columns (first 10 only)
+    cols_list = jobs_df.columns.tolist()
+    cols_str = str(cols_list[:10]) + ('...' if len(cols_list) > 10 else '')
+    print(f"Jobs columns: {cols_str}")
+    print()
+    
+    # Display unique counts for Jobs table
+    print("Jobs unique value counts per column:")
+    for col in jobs_df.columns:
+        try:
+            unique_count = jobs_df[col].nunique()
+            print(f"  {col}: {unique_count}")
+        except:
+            print(f"  {col}: Error")
+    print()
+    
+    # Display unique counts for Categories table
+    if len(categories_df) > 0:
+        print("Categories unique value counts per column:")
+        for col in categories_df.columns:
+            try:
+                unique_count = categories_df[col].nunique()
+                print(f"  {col}: {unique_count}")
+            except:
+                print(f"  {col}: Error")
+    else:
+        print("Categories table is empty")
+    print()
+    
+    # Display unique counts for JobCategories table
+    if len(job_categories_df) > 0:
+        print("JobCategories unique value counts per column:")
+        for col in job_categories_df.columns:
+            try:
+                unique_count = job_categories_df[col].nunique()
+                print(f"  {col}: {unique_count}")
+            except:
+                print(f"  {col}: Error")
+    else:
+        print("JobCategories table is empty")
+
+# ============================================================================
+# 6. Main Execution
+# ============================================================================
 
 def main():
-    """
-    Main function to handle user input and initiate processing.
-    """
-    while True:
-        csv_path = input("\nEnter path to CSV file (or 'quit' to exit): ").strip()
-        
-        if csv_path.lower() == 'quit':
-            break
-        
-        # Clean up path (remove quotes if user drag-and-dropped file)
-        csv_path = csv_path.strip('"').strip("'")
-        
-        if not os.path.exists(csv_path):
-            print(f"File not found: {csv_path}")
-            continue
-        
-        # Process the CSV file and create both databases
-        preprocess_and_normalize(csv_path)
-        break
+    """Main ETL pipeline execution."""
+    
+    jobs_df, categories_df, job_categories_df, output_dir = load_and_normalize()
+    
+    if jobs_df is None:
+        print("Failed to load data. Exiting.")
+        return
+    
+    display_validation_info(jobs_df, categories_df, job_categories_df)
+    
+    print("\nSaving to DuckDB...")
+    save_to_duckdb(jobs_df, categories_df, job_categories_df, output_dir)
+    
+    print("Saving to Pickle...")
+    save_to_pickle(jobs_df, categories_df, job_categories_df, output_dir)
+    
+    print("\nETL pipeline completed successfully!")
 
 if __name__ == "__main__":
     main()
