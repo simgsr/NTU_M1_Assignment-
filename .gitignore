@@ -1,4 +1,5 @@
-*.ipynb
+*.py
 *.db
 data/
 .DS_Store
+old_version/
